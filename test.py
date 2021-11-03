@@ -3,14 +3,14 @@ import time
 
 from model import repvgg
 
-import megengine
+import megengine as mge
 import megengine.data as data
 import megengine.data.transform as T
 import megengine.distributed as dist
 import megengine.functional as F
 
 from utils import AverageMeter, build_dataset
-logging = megengine.logger.get_logger()
+logging = mge.logger.get_logger()
 
 
 def main():
@@ -31,10 +31,15 @@ def main():
         help="number of GPUs per node (default: None, use all available GPUs)",
     )
     parser.add_argument(
-        "-m", "--model", metavar="PKL", default=None, help="path to model checkpoint"
+        "-m", "--model",
+        default=None, 
+        help="path to model checkpoint"
     )
-
-    parser.add_argument("-j", "--workers", default=2, type=int)
+    parser.add_argument(
+        "-j", "--workers", 
+        default=2, 
+        type=int
+    )
     parser.add_argument(
         "-p",
         "--print-freq",
@@ -43,6 +48,10 @@ def main():
         metavar="N",
         help="print frequency (default: 10)",
     )
+    parser.add_argument(
+        "--deploy",
+        default=0, 
+        type=int)
     parser.add_argument("--batch-size", default=100, type=int)
     parser.add_argument("--dist-addr", default="localhost")
     parser.add_argument("--dist-port", default=23456, type=int)
@@ -72,10 +81,10 @@ def worker(args):
     _, valid_dataloader = build_dataset(args)
 
     # build model
-    model = repvgg.__dict__[args.arch](pretrained=args.model is None)
+    model = repvgg.__dict__[args.arch](args.deploy)
     if args.model is not None:
         logging.info("load from checkpoint %s", args.model)
-        checkpoint = megengine.load(args.model)
+        checkpoint = mge.load(args.model)
         if "state_dict" in checkpoint:
             state_dict = checkpoint["state_dict"]
         model.load_state_dict(state_dict)
@@ -108,8 +117,8 @@ def valid(func, data_queue, args):
 
     t = time.time()
     for step, (image, label) in enumerate(data_queue):
-        image = megengine.tensor(image, dtype="float32")
-        label = megengine.tensor(label, dtype="int32")
+        image = mge.tensor(image, dtype="float32")
+        label = mge.tensor(label, dtype="int32")
 
         n = image.shape[0]
 

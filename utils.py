@@ -1,6 +1,9 @@
+import math
+
 import megengine.data.transform as T
 import megengine.data as data
 import megengine.optimizer as optim
+import megengine as mge
 
 
 class AverageMeter(object):
@@ -45,10 +48,46 @@ class ProgressMeter(object):
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
 
 
-def build_dataset(args, is_train=True):
+def get_train_trans(args):
     normalize = T.Normalize(
-        mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395]
+        mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395]  # BGR
     )
+    if (not hasattr(args, 'resolution')) or args.resolution == 224:
+        trans = T.Compose([
+            T.RandomResizedCrop(224),
+            T.RandomHorizontalFlip(0.5),
+            normalize,
+            T.ToMode("CHW")
+        ])
+    else:
+        raise ValueError('Not yet implemented.')
+    return trans
+
+
+def get_val_trans(args):
+    normalize = T.Normalize(
+        mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395]  # BGR
+    )
+    if (not hasattr(args, 'resolution')) or args.resolution == 224:
+        trans = T.Compose([
+            T.Resize(256),
+            T.CenterCrop(224),
+            normalize,
+            T.ToMode("CHW")
+        ])
+    else:
+        trans = T.Compose([
+            T.Resize(
+                args.resolution, interpolation=cv2.INTER_LINEAR),
+            T.CenterCrop(args.resolution),
+            normalize,
+            T.ToMode("CHW")
+        ])
+    return trans
+
+
+def build_dataset(args, is_train=True):
+    train_trans = get_train_trans(args)
     train_dataset = data.dataset.ImageNet(args.data, train=True)
     if is_train:
         train_sampler = data.Infinite(
@@ -58,27 +97,13 @@ def build_dataset(args, is_train=True):
         train_dataloader = data.DataLoader(
             train_dataset,
             sampler=train_sampler,
-            transform=T.Compose(
-                [  # Baseline Augmentation for small models
-                    T.Resize(256),
-                    T.CenterCrop(224),
-                    normalize,
-                    T.ToMode("CHW"),
-                ]
-            )
-            if (not hasattr(args, 'resolution')) or args.resolution == 224
-            else T.Compose(
-                [  # Facebook Augmentation for large models
-                    T.Resize(args.resolution),
-                    T.CenterCrop(args.resolution),
-                    normalize,
-                    T.ToMode("CHW"),
-                ]
-            ),
-            num_workers=args.workers,
+            transform=train_trans,
+            num_workers=args.workers
         )
     else:
         train_dataloader = None
+
+    val_trans = get_val_trans(args)
     valid_dataset = data.dataset.ImageNet(args.data, train=False)
     valid_sampler = data.SequentialSampler(
         valid_dataset, batch_size=args.val_batch_size, drop_last=False
@@ -86,15 +111,8 @@ def build_dataset(args, is_train=True):
     valid_dataloader = data.DataLoader(
         valid_dataset,
         sampler=valid_sampler,
-        transform=T.Compose(
-            [
-                T.Resize(256),
-                T.CenterCrop(224),
-                normalize,
-                T.ToMode("CHW"),
-            ]
-        ),
-        num_workers=args.workers,
+        transform=val_trans,
+        num_workers=args.workers
     )
     return train_dataloader, valid_dataloader
 
@@ -102,8 +120,8 @@ def build_dataset(args, is_train=True):
 def sgd_optimizer(model, lr, momentum, weight_decay, use_custwd):
     params = []
     for key, value in model.named_parameters():
-        if not value.requires_grad:
-            continue
+        # if not value.requires_grad:
+        #     continue
         apply_weight_decay = weight_decay
         apply_lr = lr
         if (use_custwd and ('dense' in key or 'pointwise' in key)) or 'bias' in key or 'bn' in key:
@@ -116,3 +134,76 @@ def sgd_optimizer(model, lr, momentum, weight_decay, use_custwd):
                     'weight_decay': apply_weight_decay}]
     optimizer = optim.SGD(params, lr, momentum=momentum)
     return optimizer
+
+
+def load_checkpoint(model, ckpt_path):
+    checkpoint = meg.load(ckpt_path)
+    if 'model' in checkpoint:
+        checkpoint = checkpoint['model']
+    if 'state_dict' in checkpoint:
+        checkpoint = checkpoint['state_dict']
+    ckpt = {}
+    for k, v in checkpoint.items():
+        if k.startswith('module.'):
+            ckpt[k[7:]] = v
+        else:
+            ckpt[k] = v
+    model.load_state_dict(ckpt)
+
+
+class CosineAnnealingLR(optim.LRScheduler):
+    """
+    A Simple Implement Of CosineAnnealingLR (https://arxiv.org/abs/1608.03983)
+    Args:
+        optimizer (Optimizer): Wrapped optimizer.
+        T_max (int): Maximum number of iterations.
+        eta_min (float): Minimum learning rate. Default: 0.
+        current_epoch (int): the index of current epoch. Default: -1.
+    """
+
+    def __init__(self, optimizer, T_max, eta_min, current_epoch=-1):
+        self.T_max = T_max
+        self.eta_min = eta_min
+        super(CosineAnnealingLR, self).__init__(optimizer, current_epoch)
+
+    def get_lr(self):
+        if self.current_epoch == -1:
+            return self.base_lrs
+        elif (self.current_epoch - 1 - self.T_max) % (2 * self.T_max) == 0:
+            return [group['lr'] + (base_lr - self.eta_min) *
+                    (1 - math.cos(math.pi / self.T_max)) / 2
+                    for base_lr, group in
+                    zip(self.base_lrs, self.optimizer.param_groups)]
+        return [(1 + math.cos(math.pi * self.current_epoch / self.T_max)) /
+                (1 + math.cos(math.pi * (self.current_epoch - 1) / self.T_max)) *
+                (group['lr'] - self.eta_min) + self.eta_min
+                for group in self.optimizer.param_groups]
+
+    def state_dict(self):
+        return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
+
+    def load_state_dict(self, state_dict):
+        self.__dict__.update(state_dict)
+
+
+if __name__ == '__main__':
+    pass
+    # *****************  test CosineAnnealingLR  ***************************
+
+    # import  matplotlib.pyplot as plt
+    # model = mge.hub.load('megengine/models', 'resnet18')
+    # opt = mge.optimizer.SGD(model.parameters(), 0.1)
+    # cos_opt = CosineAnnealingLR(opt, T_max=200, eta_min=0)
+    # lr_list = []
+    # for i in range(2000):
+    #     opt.step()
+    #     cos_opt.step()
+    #     cur_lr=opt.param_groups[-1]['lr']
+    #     lr_list.append(cur_lr)
+    # x_list = list(range(len(lr_list)))
+    # plt.plot(x_list, lr_list)
+    # plt.show()
+    # mge.save(cos_opt.state_dict(),'./ckpt/cos.kpl')
+    # new = CosineAnnealingLR(opt, T_max=200, eta_min=0)
+    # new.load_state_dict(mge.load('./ckpt/cos.kpl'))
+    # print(new.current_epoch)

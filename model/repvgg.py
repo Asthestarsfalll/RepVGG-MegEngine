@@ -1,20 +1,21 @@
-import megengine.module as m
+import megengine.module as M
 import megengine.functional as F
 import numpy as np
-import megengine
+import megengine as mge
 import copy
-from se_block import SEBlock
+from .se_block import SEBlock
+import os
 
 
 def ConvBn(in_ch, out_ch, stride, padding, kernel_size=3, groups=1):
-    result = m.Sequential(
-        m.Conv2d(in_ch, out_ch, kernel_size, stride, padding, groups=groups),
-        m.BatchNorm2d(num_features=out_ch)
+    result = M.Sequential(
+        M.Conv2d(in_ch, out_ch, kernel_size, stride, padding, groups=groups),
+        M.BatchNorm2d(num_features=out_ch)
     )
     return result
 
 
-class RepVGGBlock(m.Module):
+class RepVGGBlock(M.Module):
     def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, deploy=False, use_se=False):
         super(RepVGGBlock, self).__init__()
         """
@@ -29,20 +30,20 @@ class RepVGGBlock(m.Module):
 
         padding_11 = padding - kernel_size // 2  # padding11用于1乘1卷积
 
-        self.nonlinearity = m.ReLU()
+        self.nonlinearity = M.ReLU()
 
         if use_se:
             self.se = SEBlock(
                 out_ch, internal_neurons=out_ch // 16)
         else:
-            self.se = m.Identity()
+            self.se = M.Identity()
 
         if deploy:
-            self.reparam = m.Conv2d(in_ch, out_ch, kernel_size=kernel_size, stride=stride,
+            self.reparam = M.Conv2d(in_ch, out_ch, kernel_size=kernel_size, stride=stride,
                                     padding=padding, dilation=dilation, groups=groups, bias=True)
 
         else:
-            self.identity = m.BatchNorm2d(
+            self.identity = M.BatchNorm2d(
                 num_features=in_ch) if out_ch == in_ch and stride == 1 else None
             # 3x3
             self.dense = ConvBn(in_ch, out_ch,
@@ -64,12 +65,12 @@ class RepVGGBlock(m.Module):
         return self.nonlinearity(self.se(self.dense(inputs)+self.pointwise(inputs)+identity))
 
     def get_custom_L2(self):
-        K3 = self.dense[0].weight  # kernel 3x3
-        K1 = self.pointwise[0].weight  # kernel 1x1
-        t3 = (self.dense[1].weight / ((self.rbr_dense[1].running_var +
-                                       self.rbr_dense[1].eps).sqrt())).reshape(-1, 1, 1, 1).detach()
-        t1 = (self.pointwise[1].weight / ((self.pointwise[1].running_var +
-                                           self.pointwise[1].eps).sqrt())).reshape(-1, 1, 1, 1).detach()
+        t3 = (self.dense[1].weight / (F.sqrt(self.dense[1].running_var +
+                                             self.dense[1].eps))).reshape(-1, 1, 1, 1).detach()  # bn
+        t1 = (self.pointwise[1].weight / (F.sqrt(self.pointwise[1].running_var +
+                                                 self.pointwise[1].eps))).reshape(-1, 1, 1, 1).detach()
+        K3 = self.dense[0].weight  # conv
+        K1 = self.pointwise[0].weight
 
         # The L2 loss of the "circle" of weights in 3x3 kernel. Use regular L2 on them.
         l2_loss_circle = (K3 ** 2).sum() - (K3[:, :, 1:2, 1:2] ** 2).sum()
@@ -83,28 +84,24 @@ class RepVGGBlock(m.Module):
         if weight is None:
             return 0
         else:
-            out_ch, in_ch = weight.shape[0:2]
-            kernel = megengine.tensor(np.zeros((out_ch, in_ch, 3, 3)))
-            # print(kernel.device)
-            # print(kernel.dtype)
-            kernel[:, :, 1, 1] = weight[:, :, 0, 0]
+            kernel = F.nn.pad(weight, [(0,0),(0,0),(1,1),(1,1)])
             return kernel
 
     def _fuse_bn(self, branch):
         if branch is None:
             return 0, 0
-        if isinstance(branch, m.Sequential):
+        if isinstance(branch, M.Sequential):
             kernel, running_mean, running_var, gamma, beta, eps = branch[0].weight, branch[
                 1].running_mean, branch[1].running_var, branch[1].weight, branch[1].bias, branch[1].eps
         else:
-            assert isinstance(branch, m.BatchNorm2d)  # 只有BN层
+            assert isinstance(branch, M.BatchNorm2d)  # 只有BN层
             if not hasattr(self, 'bn_identity'):  # 对于BN层，初始化时创建一个bn_identity
                 input_dim = self.in_channels // self.groups
                 kernel_value = np.zeros(
                     (self.in_channels, input_dim, 3, 3), dtype=np.float32)  # 填0
                 for i in range(self.in_channels):
                     kernel_value[i, i % input_dim, 1, 1] = 1  # identity
-                self.bn_identity = megengine.tensor(
+                self.bn_identity = mge.tensor(
                     kernel_value).to(branch.weight.device)
             kernel, running_mean, running_var, gamma, beta, eps = self.bn_identity, branch.running_mean, branch.running_var, branch.weight, branch.bias, branch.eps
 
@@ -122,7 +119,7 @@ class RepVGGBlock(m.Module):
         if self.deploy:
             return
         kernel, bias = self.convert_kernel_bias()
-        self.reparam = m.Conv2d(in_channels=self.dense[0].in_channels, out_channels=self.dense[0].out_channels,
+        self.reparam = M.Conv2d(in_channels=self.dense[0].in_channels, out_channels=self.dense[0].out_channels,
                                 kernel_size=self.dense[0].kernel_size, stride=self.dense[0].stride,
                                 padding=self.dense[0].padding, dilation=self.dense[0].dilation, groups=self.dense[0].groups, bias=True)
         self.reparam.weight.data = kernel
@@ -139,7 +136,7 @@ class RepVGGBlock(m.Module):
         self.deploy = True
 
 
-class RepVGG(m.Module):
+class RepVGG(M.Module):
 
     def __init__(self, num_blocks, num_classes=1000, width_multiplier=None, override_groups_map=None, deploy=False, use_se=False):
         super(RepVGG, self).__init__()
@@ -168,30 +165,34 @@ class RepVGG(m.Module):
             int(256 * width_multiplier[2]), num_blocks[2], stride=2)
         self.stage4 = self._make_stage(
             int(512 * width_multiplier[3]), num_blocks[3], stride=2)
-        self.gap = m.AdaptiveAvgPool2d((1, 1))  # ?
+        self.gap = M.AdaptiveAvgPool2d((1, 1))  # ?
 
-        self.linear = m.Linear(int(512 * width_multiplier[3]), num_classes)
+        self.linear = M.Linear(int(512 * width_multiplier[3]), num_classes)
 
     def _make_stage(self, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
         blocks = []
         for stride in strides:
             cur_groups = self.override_groups_map.get(
-                self.index, 1)  # 随机选取分组数？
+                self.index, 1)
             blocks.append(RepVGGBlock(in_ch=self.in_planes, out_ch=planes, kernel_size=3,
                                       stride=stride, padding=1, groups=cur_groups, deploy=self.deploy, use_se=self.use_se))
             self.in_planes = planes  # 更新
             self.index += 1
-        return m.Sequential(*blocks)
+        return M.Sequential(*blocks)
 
-    def _switch_to_deploy_and_save(self, save_path=None):
+    def _switch_to_deploy_and_save(self, save_path=None, save_name='RepVGG_deploy'):
         for module in self.modules():
             print(module)
             if hasattr(module, 'switch_to_deploy'):
                 module.switch_to_deploy()
         print(self)
         if save_path is not None:
-            megengine.save(self.state_dict, save_path)
+            if not os.path.exists(save_path):
+                os.mkdir(save_path)
+            save_path = os.path.join(save_path, save_name+'.pkl')
+            mge.save(self.state_dict, save_path)
+            print(f'save state_dict to {save_path}')
 
     def forward(self, x):
         out = self.stage0(x)
@@ -280,19 +281,3 @@ def RepVGGD2se(deploy=False):
                   width_multiplier=[2.5, 2.5, 2.5, 5], override_groups_map=None, deploy=deploy, use_se=True)
 
 
-if __name__ == "__main__":
-    # inputs = megengine.tensor(np.random.random((2, 3, 256, 256)))
-    # block = RepVGGBlock(in_ch=3, out_ch=3, kernel_size=3, stride=1,
-    # padding=1, dilation=1, groups=1, deploy=False, use_se=False)
-    # out = block(inputs)
-    # print(out.shape)
-    # block.eval()
-    # print(block)
-    # block.switch_to_deploy()
-    # print(block)
-    vgg = RepVGG(num_blocks=[2, 4, 14, 1], num_classes=19, width_multiplier=[
-                 0.75, 0.75, 0.75, 2.5], override_groups_map=None, deploy=False)
-    print(vgg)
-    vgg._switch_to_deploy_and_save(None)
-    # out = vgg(inputs)
-    # print(out.shape)
