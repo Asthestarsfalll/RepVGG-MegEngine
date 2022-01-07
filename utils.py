@@ -1,9 +1,9 @@
 import math
 
-import megengine.data.transform as T
-import megengine.data as data
-import megengine.optimizer as optim
 import megengine as mge
+import megengine.data as data
+import megengine.data.transform as T
+import megengine.optimizer as optim
 
 
 class AverageMeter(object):
@@ -87,9 +87,9 @@ def get_val_trans(args):
 
 
 def build_dataset(args, is_train=True):
-    train_trans = get_train_trans(args)
-    train_dataset = data.dataset.ImageNet(args.data, train=True)
     if is_train:
+        train_trans = get_train_trans(args)
+        train_dataset = data.dataset.ImageNet(args.data, train=True)
         train_sampler = data.Infinite(
             data.RandomSampler(
                 train_dataset, batch_size=args.batch_size, drop_last=True)
@@ -102,7 +102,7 @@ def build_dataset(args, is_train=True):
         )
     else:
         train_dataloader = None
-
+    
     val_trans = get_val_trans(args)
     valid_dataset = data.dataset.ImageNet(args.data, train=False)
     valid_sampler = data.SequentialSampler(
@@ -136,21 +136,6 @@ def sgd_optimizer(model, lr, momentum, weight_decay, use_custwd):
     return optimizer
 
 
-def load_checkpoint(model, ckpt_path):
-    checkpoint = meg.load(ckpt_path)
-    if 'model' in checkpoint:
-        checkpoint = checkpoint['model']
-    if 'state_dict' in checkpoint:
-        checkpoint = checkpoint['state_dict']
-    ckpt = {}
-    for k, v in checkpoint.items():
-        if k.startswith('module.'):
-            ckpt[k[7:]] = v
-        else:
-            ckpt[k] = v
-    model.load_state_dict(ckpt)
-
-
 class CosineAnnealingLR(optim.LRScheduler):
     """
     A Simple Implement Of CosineAnnealingLR (https://arxiv.org/abs/1608.03983)
@@ -180,30 +165,35 @@ class CosineAnnealingLR(optim.LRScheduler):
                 for group in self.optimizer.param_groups]
 
     def state_dict(self):
-        return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
+        return self.__dict__
 
     def load_state_dict(self, state_dict):
         self.__dict__.update(state_dict)
 
 
 if __name__ == '__main__':
-    pass
     # *****************  test CosineAnnealingLR  ***************************
-
-    # import  matplotlib.pyplot as plt
-    # model = mge.hub.load('megengine/models', 'resnet18')
-    # opt = mge.optimizer.SGD(model.parameters(), 0.1)
-    # cos_opt = CosineAnnealingLR(opt, T_max=200, eta_min=0)
-    # lr_list = []
-    # for i in range(2000):
-    #     opt.step()
-    #     cos_opt.step()
-    #     cur_lr=opt.param_groups[-1]['lr']
-    #     lr_list.append(cur_lr)
-    # x_list = list(range(len(lr_list)))
-    # plt.plot(x_list, lr_list)
-    # plt.show()
-    # mge.save(cos_opt.state_dict(),'./ckpt/cos.kpl')
-    # new = CosineAnnealingLR(opt, T_max=200, eta_min=0)
-    # new.load_state_dict(mge.load('./ckpt/cos.kpl'))
-    # print(new.current_epoch)
+    import matplotlib.pyplot as plt
+    import megengine.module as M
+    class Conv(M.Module):
+        def __init__(self):
+            super(Conv, self).__init__()
+            self.layer = M.Conv2d(3,3,1)
+        def forward(self, inputs):
+            return self.layer(inputs)
+    model = Conv()
+    opt = mge.optimizer.SGD(model.parameters(), 0.1)
+    cos_opt = CosineAnnealingLR(opt, T_max=2000, eta_min=0)
+    lr_list = []
+    for i in range(2000):
+        opt.step()
+        cos_opt.step()
+        cur_lr = opt.param_groups[-1]['lr']
+        lr_list.append(cur_lr)
+    x_list = list(range(len(lr_list)))
+    plt.plot(x_list, lr_list)
+    plt.show()
+    mge.save(cos_opt.state_dict(), './ckpt/cos.kpl')
+    new = CosineAnnealingLR(opt, T_max=2000, eta_min=0)
+    new.load_state_dict(mge.load('./ckpt/cos.kpl'))
+    print(new.current_epoch)

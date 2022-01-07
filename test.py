@@ -1,19 +1,19 @@
 import argparse
 import time
 
-from model import repvgg
-
 import megengine as mge
 import megengine.data as data
 import megengine.data.transform as T
 import megengine.distributed as dist
 import megengine.functional as F
 
+import model as repvgg
 from utils import AverageMeter, build_dataset
+
 logging = mge.logger.get_logger()
 
 
-def main():
+def make_parser():
     parser = argparse.ArgumentParser(description="MegEngine ImageNet Training")
     parser.add_argument("-d", "--data", metavar="DIR",
                         help="path to imagenet dataset")
@@ -21,7 +21,8 @@ def main():
         "-a",
         "--arch",
         default="repvggA0",
-        help="model architecture (default: RepVGGA0,option:RepVGGA0,RepVGGA1,RepVGGA2,RepVGGB0,RepVGGB1,RepVGGB1g2,RepVGGB1g4,RepVGGB2,RepVGGB2g2,RepVGGB2g4,RepVGGB3,RepVGGB3g2,RepVGGB3g4,RepVGGD2se )",
+        help="model architecture (default: RepVGGA0,"
+             "optional:RepVGGA0,RepVGGA1,RepVGGA2,RepVGGB0,RepVGGB1,RepVGGB1g2,RepVGGB1g4,RepVGGB2,RepVGGB2g2,RepVGGB2g4,RepVGGB3,RepVGGB3g2,RepVGGB3g4,RepVGGD2se )",
     )
     parser.add_argument(
         "-n",
@@ -32,12 +33,12 @@ def main():
     )
     parser.add_argument(
         "-m", "--model",
-        default=None, 
+        default=None,
         help="path to model checkpoint"
     )
     parser.add_argument(
-        "-j", "--workers", 
-        default=2, 
+        "-j", "--workers",
+        default=2,
         type=int
     )
     parser.add_argument(
@@ -46,22 +47,32 @@ def main():
         default=20,
         type=int,
         metavar="N",
-        help="print frequency (default: 10)",
+        help="print frequency (default: 20)",
     )
     parser.add_argument(
         "--deploy",
-        default=0, 
-        type=int)
-    parser.add_argument("--batch-size", default=100, type=int)
+        default=0,
+        type=int
+    )
+    parser.add_argument(
+        "--switch-deploy",
+        default=0,
+        type=int
+    )
+    parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--dist-addr", default="localhost")
     parser.add_argument("--dist-port", default=23456, type=int)
     parser.add_argument("--world-size", default=-1, type=int)
     parser.add_argument("--rank", default=0, type=int)
+    return parser
 
+
+def main():
+    parser = make_parser()
     args = parser.parse_args()
 
     if args.ngpus is None:
-        args.ngpus = dist.helper.get_device_count_by_fork("gpu")
+        args.ngpus = mge.get_device_count("gpu")
 
     if args.world_size * args.ngpus > 1:
         dist_worker = dist.launcher(
@@ -78,7 +89,7 @@ def main():
 
 def worker(args):
     # build dataset
-    _, valid_dataloader = build_dataset(args)
+    _, valid_dataloader = build_dataset(args, is_train=False)
 
     # build model
     model = repvgg.__dict__[args.arch](args.deploy)
@@ -88,6 +99,8 @@ def worker(args):
         if "state_dict" in checkpoint:
             state_dict = checkpoint["state_dict"]
         model.load_state_dict(state_dict)
+    if args.switch_deploy:
+        model._switch_to_deploy_and_save()
 
     def valid_step(image, label):
         logits = model(image)

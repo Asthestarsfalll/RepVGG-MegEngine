@@ -1,16 +1,16 @@
 import argparse
-import os
-from model import repvgg
 import bisect
+import os
 import time
 
 import megengine as mge
-import megengine.functional as F
-import megengine.distributed as dist
-
 import megengine.autodiff as autodiff
-from utils import AverageMeter, ProgressMeter, build_dataset, sgd_optimizer, CosineAnnealingLR
+import megengine.distributed as dist
+import megengine.functional as F
 
+import model as repvgg
+from utils import (AverageMeter, CosineAnnealingLR, ProgressMeter,
+                   build_dataset, sgd_optimizer)
 
 logging = mge.logger.get_logger()
 
@@ -18,15 +18,20 @@ best_acc1 = 0
 best_acc5 = 0
 
 
-def main():
+def make_parser():
     parser = argparse.ArgumentParser(description="MegEngine RepVGG Training")
-    parser.add_argument("-d", "--data", metavar="DIR",
-                        help="path to imagenet dataset")
+    parser.add_argument(
+        "-d",
+        "--data",
+        metavar="DIR",
+        help="path to imagenet dataset"
+    )
     parser.add_argument(
         "-a",
         "--arch",
         default="repvggA0",
-        help="model architecture (default: RepVGGA0,option:RepVGGA0,RepVGGA1,RepVGGA2,RepVGGB0,RepVGGB1,RepVGGB1g2,RepVGGB1g4,RepVGGB2,RepVGGB2g2,RepVGGB2g4,RepVGGB3,RepVGGB3g2,RepVGGB3g4,RepVGGD2se)",
+        help="model architecture "
+             "(optional: RepVGGA0,RepVGGA1,RepVGGA2,RepVGGB0,RepVGGB1,RepVGGB1g2,RepVGGB1g4,RepVGGB2,RepVGGB2g2,RepVGGB2g4,RepVGGB3,RepVGGB3g2,RepVGGB3g4,RepVGGD2se)",
     )
     parser.add_argument(
         "-n",
@@ -57,7 +62,7 @@ def main():
         "-b",
         "--batch-size",
         metavar="SIZE",
-        default=256,
+        default=64,
         type=int,
         help="batch size for single GPU (default: 64)",
     )
@@ -131,15 +136,19 @@ def main():
     )
     parser.add_argument(
         '--tag',
-        default='test',
+        default='repvgg',
         type=str,
         help='the tag for identifying the log and model files. Just a string.'
     )
+    return parser
 
+
+def main():
+    parser = make_parser()
     args = parser.parse_args()
 
     if args.ngpus is None:
-        args.ngpus = dist.helper.get_device_count_by_fork("gpu")
+        args.ngpus = mge.get_device_count("gpu")
 
     if args.world_size * args.ngpus > 1:
         print("Use GPU: {} for training".format(args.ngpus))
@@ -157,26 +166,27 @@ def main():
 
 def worker(args):
     # pylint: disable=too-many-statements
-    if dist.get_rank() == 0:
+    is_main = dist.get_rank()
+    if is_main == 0:
         os.makedirs(os.path.join(args.save, args.arch), exist_ok=True)
         mge.logger.set_log_file(
-            os.path.join(args.save, args.arch, args.tag+"log.txt"))
+            os.path.join(args.save, args.arch, args.tag + "log.txt"))
 
     # build dataset
     train_dataloader, valid_dataloader = build_dataset(args)
     train_queue = iter(train_dataloader)  # infinite
     steps_per_epoch = 1281167 // (dist.get_world_size() * args.batch_size)
 
-    # Optimizer
-    opt = sgd_optimizer(model, args.lr*dist.get_world_size(),
-                        args.momentum, args.weight_decay, args.custwd)
-    cos_opt = CosineAnnealingLR(
-        optimizer, T_max=args.epochs * steps_per_epoch, eta_min=0)  # change lr every step
-
     # build model
     model = repvgg.__dict__[args.arch]()
 
-    if args.resume and dist.get_rank() == 0:
+    # Optimizer
+    opt = sgd_optimizer(model, args.lr * dist.get_world_size(),
+                        args.momentum, args.weight_decay, args.custwd)
+    cos_opt = CosineAnnealingLR(
+        opt, T_max=args.epochs * steps_per_epoch, eta_min=0)  # change lr every step
+
+    if args.resume and is_main == 0:
         if os.path.isfile(args.resume):
             global best_acc1, best_acc5
             logging.info("=> loading checkpoint '%s'", args.resume)
@@ -185,17 +195,16 @@ def worker(args):
             best_acc1 = checkpoint['best_acc1']
             best_acc5 = checkpoint['best_acc5']
             model.load_state_dict(checkpoint['state_dict'])
-            opt.load_state_dict(checkpoint['optimizer'])
             cos_opt.load_state_dict(checkpoint['scheduler'])
             logging.info("=> loaded checkpoint '%s' (epoch %d)",
                          args.resume, checkpoint['epoch'])
         else:
             logging.info("=> no checkpoint found at '%s'", args.resume)
 
-    # Sync tensor and buffers
+    # Sync parameters and buffers
     if dist.get_world_size() > 1:
         print(f'world_size is{dist.get_world_size()}')
-        dist.bcast_list_(model.tensor())
+        dist.bcast_list_(model.parameters())
         dist.bcast_list_(model.buffers())
 
     # Autodiff gradient manager
@@ -233,8 +242,6 @@ def worker(args):
     clck = AverageMeter("Time")
 
     for step in range(0, args.epochs * steps_per_epoch):
-        lr = adjust_learning_rate(step)
-
         t = time.time()
 
         image, label = next(train_queue)
@@ -250,7 +257,9 @@ def worker(args):
 
         cos_opt.step()
 
-        if step % args.print_freq == 0 and dist.get_rank() == 0:
+        lr = opt.param_groups[-1]['lr']
+
+        if step % args.print_freq == 0 and is_main == 0:
             logging.info(
                 "Epoch %d Step %d, LR %.4f, %s %s %s %s",
                 step // steps_per_epoch,
@@ -282,18 +291,19 @@ def worker(args):
             if valid_acc5 > best_acc5:
                 best_acc5 = valid_acc5
 
-            if dist.get_rank() == 0:
+            if is_main == 0:
+                epoch = (step + 1) // steps_per_epoch
                 mge.save(
                     {
-                        "epoch": (step + 1) // steps_per_epoch,
+                        "epoch": epoch,
                         "arch": args.arch,
                         "state_dict": model.state_dict(),
-                        "optimizer": opt.state_dict(),
                         "scheduler": cos_opt.state_dict(),
                         'best_acc1': best_acc1,
                         'best_acc5': best_acc5
                     },
-                    os.path.join(args.save, args.arch, "checkpoint.pkl"),
+                    os.path.join(args.save, args.arch,
+                                 str(epoch) + "checkpoint.pkl"),
                 )
 
 
@@ -318,7 +328,7 @@ def valid(func, data_queue, args):
         clck.update(time.time() - t, n)
         t = time.time()
 
-        if step % args.print_freq == 0 and dist.get_rank() == 0:
+        if step % args.print_freq == 0 and dist.get_rank == 0:
             logging.info("Test step %d, %s %s %s %s",
                          step, objs, top1, top5, clck)
 
