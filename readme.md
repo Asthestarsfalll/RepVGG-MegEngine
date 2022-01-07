@@ -1,32 +1,34 @@
 # RepVGG: Making VGG-style ConvNets Great Again(CVPR-2021)
 
 - [RepVGG: Making VGG-style ConvNets Great Again(CVPR-2021)](#repvgg-making-vgg-style-convnets-great-againcvpr-2021)
-  - [Updata](#updata)
+  - [Update](#update)
   - [To Do](#to-do)
   - [RepVGG](#repvgg)
     - [介绍](#介绍)
     - [选择plain结构的原因](#选择plain结构的原因)
     - [plain结构的缺点及折中办法](#plain结构的缺点及折中办法)
     - [重参数化](#重参数化)
-  - [其他](#其他)
-    - [代码结构](#代码结构)
-    - [验证](#验证)
-    - [训练](#训练)
+  - [Get Started](#get-started)
+    - [Structure](#structure)
+    - [validate](#validate)
+    - [Train](#train)
+    - [Pretrained Weights](#pretrained-weights)
+    - [test](#test)
+  - [References](#references)
 
-**The MegEngine version implemention for RepVGG.**
-
-**受限于算力与数据集，目前并未得到任何训练好的模型文件**。
+**The MegEngine version implemention for [RepVGG](https://github.com/DingXiaoH/RepVGG).**
 
 [MegStudio地址](https://studio.brainpp.com/project/12325?name=%E3%80%8ARepVGG%3A%20Making%20VGG-style%20ConvNets%20Great%20Again%E3%80%8B%E5%A4%8D%E7%8E%B0%20%E7%9A%84%E8%AE%AD%E7%BB%83%E9%A1%B9%E7%9B%AE)
 
-## Updata
+## Update
 
-[2021.11.6] 修改了导包时的命名错误和图像预处理方案；将训练策略修改为余弦退火；增加了断点续炼的功能。
+[2022.01.08]  [BaseCls](https://github.com/megvii-research/basecls)提供了MegEngine版本RepVGG的预训练模型，本次更新提供脚本转换权重及转换好的权重; 修复了switch 						to deploy时赋值失败的错误。
+
+[2021.11.06] 修改了导包时的命名错误和图像预处理方案；将训练策略修改为余弦退火；增加了断点续炼的功能。
 
 ## To Do
 
 1. 使用DTR优化；
-2. 训练以获得模型文件及最终结果；
 3. 量化。
 
 ## RepVGG
@@ -115,9 +117,9 @@ mean_{t}=\frac{\sum_{i=1}^{t}x_i}{N_t}=\frac{mean_{t-1}\cdot(N_{t-1}+x_t)}{N_t}=
 $$
 而在推理时，BN层则会固定这些参数，这也是我们能够融合CONVBN的原因。
 
-## 其他
+## Get Started
 
-### 代码结构
+### Structure
 
 ```
 ├── README.md
@@ -126,25 +128,67 @@ $$
 ├── train.py # 训练
 ├── test.py # 评估
 ├── verify.py # 验证模型搭建正确与否
+├── convert_pretrained_weight.py # 用于转换预训练权重
 ```
 
-### 验证
+### validate
 
-```shell
-!python verify.py
+```sh
+python verify.py
+```
+
+### Train
+
+```sh
+python train.py --help 
+```
+
+```sh
+python train.py --data /path/to/data/ --arch RepVGGA0 --save checkpoints --ngpus 4 --batch-size 256 --print-freq 20
+```
+
+### Pretrained Weights
+
+受限于算力，目前只测试了RepVGG-A0。
+
+| Model       | Top1-acc | Top2-acc | Pretained Model                                              | Converted Model                                              |
+| ----------- | -------- | -------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| RepVGG-A0   | 72.254   | 90.494   | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_a0/repvgg_a0.pkl) | [here](https://drive.google.com/file/d/1Yz0tK_6zMTDkbA5u2T-uovf_gxAyZaWg/view?usp=sharing) |
+| RepVGG-A1   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_a1/repvgg_a1.pkl) | [here](https://drive.google.com/file/d/1hLvPO-WKBHlBv7XQBf7ULtSgbnZtb2lQ/view?usp=sharing) |
+| RepVGG-B0   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b0/repvgg_b0.pkl) | [here](https://drive.google.com/file/d/1DzyQDyMgzewgWlIXNM3CrDc1OjU1inFn/view?usp=sharing) |
+| RepVGG-A2   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_a2/repvgg_a2.pkl) | [here](https://drive.google.com/file/d/1ReCB6GrogAsNmzPU07E4KoFiWttdUc0G/view?usp=sharing) |
+| RepVGG-B1g4 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b1g4/repvgg_b1g4.pkl) | [here](https://drive.google.com/file/d/1Sdu_tI_-SPIEiWZo5ThjZOPKRsk3da_V/view?usp=sharing) |
+| RepVGG-B1g2 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b1g2/repvgg_b1g2.pkl) | [here](https://drive.google.com/file/d/1gf5KumKHHHP7cB8ARUnE-RRUtdPc49dx/view?usp=sharing) |
+| RepVGG-B1   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b1/repvgg_b1.pkl) | [here](https://drive.google.com/file/d/15yuXSG5sjDaUvW2kVkVF0vj45A6HMR2N/view?usp=sharing) |
+| RepVGG-B2g4 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b2g4/repvgg_b2g4.pkl) | [here](https://drive.google.com/file/d/1AWTLd9c5U9zt6YgrlynWBArWHel9u5_v/view?usp=sharing) |
+| RepVGG-B2g2 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b2g2/repvgg_b2g2.pkl) | here                                                         |
+| RepVGG-B2   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b2/repvgg_b2.pkl) | [here](https://drive.google.com/file/d/1-fdGpFLqUiKPOF5cTNpNUlOYAwjgPZZA/view?usp=sharing) |
+| RepVGG-B3g4 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b3g4/repvgg_b3g4.pkl) | [here](https://drive.google.com/file/d/1kKaBlRvVvmndHSpDFk7FNzJ6tdLmCVb6/view?usp=sharing) |
+| RepVGG-B3g2 |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b3g2/repvgg_b3g2.pkl) | here                                                         |
+| RepVGG-B3   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_b3/repvgg_b3.pkl) | [here](https://drive.google.com/file/d/1B6paQjKCuVZ5fwAbOrrFn6cQMnhkfmmm/view?usp=sharing) |
+| RepVGG-D2   |          |          | [here](https://data.megengine.org.cn/research/basecls/models/repvgg/repvgg_d2/repvgg_d2.pkl) | here                                                         |
+
+Convert pertrained weight 
+
+```sh
+python convert_pretrained_weight.py --origin-dir /path/to/weight --save-dir /path/to/save --model-arch RepVGGA0
 ```
 
 
 
-### 训练
+### test
 
-```shell
-!python train.py --help 
+```sh
+python test.py --help
 ```
 
-```shell
-!python train.py --data /home/megstudio/workspace/data/ --a RepVGGA0 --save checkpoints --ngpus 0 --batch-size 1 --print-freq 1
+```sh
+python test.py --data /path/to/data --arch RepVGGA0 --model /path/to/weights_file --val-batch-size 100 --deploy 0 --switch-deploy 1 --print-freq 20
 ```
 
+## References
 
+https://github.com/DingXiaoH/RepVGG
+
+https://github.com/megvii-research/basecls
 
